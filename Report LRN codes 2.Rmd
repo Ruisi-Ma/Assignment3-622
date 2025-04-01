@@ -1,0 +1,165 @@
+---
+title: "SURV 622"
+author: "GROUP ASS 2"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+tweets <- read_excel("C:/Users/USER/Desktop/SEMESTER 2/surv 622/full hand coded.xlsx")
+
+
+```
+
+```{r}
+# Extractting time and date info from tweet timestamps:
+
+library(lubridate)
+tweets$timestamp <- as.numeric(tweets$timestamp)
+head(tweets$timestamp)
+str(tweets$timestamp)
+
+tweets$timestamp <- as.POSIXct(tweets$timestamp, origin = "1970-01-01", tz = "America/New_York")
+
+tweets$hour <- hour(tweets$timestamp)
+tweets$weekday <- wday(tweets$timestamp, label = TRUE)
+tweets$date <- as.Date(tweets$timestamp)
+```
+
+# a little cleaning first
+```{r}
+
+
+library(dplyr)
+
+tweets$sentiment <- tolower(tweets$`hand-classification`)
+
+tweets <- tweets %>%
+  mutate(sentiment = case_when(
+    sentiment %in% c("favour", "favor", "for") ~ "favour",
+    sentiment %in% c("oppose", "opposite") ~ "oppose",
+    sentiment %in% c("neutral", "neural") ~ "neutral",
+    sentiment %in% c("irrelevant", "irrevelant", "irrellevant") ~ "irrelevant",
+    TRUE ~ sentiment  
+  ))
+tweets$sentiment <- factor(tolower(tweets$sentiment),
+                           levels = c("favour", "oppose", "neutral", "irrelevant"))
+
+```
+
+1. Text Preprocessing and Feature Creation
+```{r}
+
+library(dplyr)
+library(stringr)
+library(tidytext)
+library(SnowballC)    
+library(stopwords)  
+
+#tweets
+
+#  preprocessing function
+tweets_processed <- function(tweets, text_column = "text") {
+  tweets %>%
+    # Step 1: Creating a unique post ID 
+    mutate(post_id = as.character(row_number())) %>%
+    
+    # Step 2: Cleaning - lowercase, remove punctuation, remove numbers
+    mutate(!!text_column := tolower(!!sym(text_column)),
+           !!text_column := str_replace_all(!!sym(text_column), "[[:punct:]]", ""),
+           !!text_column := str_remove_all(!!sym(text_column), "\\d+")) %>%
+    
+    # Step 3: Tokenizing into individual words
+    unnest_tokens(word, !!sym(text_column)) %>%
+    
+    # Step 4: Removing stop words
+    anti_join(stop_words, by = "word") %>%
+    
+    # Step 5: Applying stemming to reduce words to their root form
+    mutate(word = wordStem(word)) %>%
+    
+    # Optional: Remove empty strings after stemming
+    filter(word != "")
+}
+
+Cleaned_tweets <- tweets_processed(tweets)
+print(Cleaned_tweets)
+
+library(ggplot2)
+
+Cleaned_tweets %>%
+  count(word, sort = TRUE) %>%  # Counting word frequency
+  filter(n >= 2) %>%            # Filtering out rare words
+  ggplot(aes(n)) +
+  geom_histogram(binwidth = 1, fill = "gray30") +  
+  scale_x_log10() +
+  geom_vline(xintercept = 2, linetype = "dashed", color = "red") +
+  labs(
+    title = "Word Frequency Distribution (Log Scale)",
+    x = "Word Frequency (n)",
+    y = "Count of Unique Words"
+  )
+
+```
+
+```{r}
+
+# Grouping by document ID and pasting tokens back into a full string
+Cleaned_texts_rejoined <- Cleaned_tweets %>%
+  group_by(post_id) %>%
+  summarise(
+    text = paste(word, collapse = " "),
+    across(-word, ~ first(.)),   # brings in all other columns (except 'word')
+    .groups = "drop"
+  )
+
+
+# corpus
+corpus <- VCorpus(VectorSource(Cleaned_texts_rejoined$text))
+
+dtm <- DocumentTermMatrix(corpus, control = list(weighting = weightTfIdf))
+
+dtm = removeSparseTerms(dtm, 0.98)
+
+```
+# Convertting the matrix to a data frame
+```{r}
+
+dtm_df = as.data.frame(as.matrix(dtm))
+dtm_df$ID <- rownames(dtm_df)
+
+```
+
+2. Dataset Splitting: into training (80 percent) and test (20 percent) sets.
+```{r}
+#install.packages("rsample")
+library(rsample)
+
+set.seed(123)
+
+# 20% holdout sample
+test <- dtm_df %>% sample_frac(.2)
+
+# Rest in the training set
+train <- dtm_df %>% anti_join(test, by = 'ID') %>% select(-ID)
+
+# Remove ID after using to create train/test
+
+test <- test %>% select(-ID)
+```
+
+
+
+
+
+
+
+
+
+
+
