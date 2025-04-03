@@ -1,0 +1,260 @@
+---
+title: "SURV 622"
+author: "GROUP ASS 2"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE} 
+library(readxl)
+posts <- read_excel("C:/Users/lenovo/Documents/full hand coded.xlsx")
+
+```
+
+```{r, message=FALSE, warning=FALSE} 
+# Extractting time and date info from tweet timestamps:
+
+library(lubridate)
+posts$timestamp <- as.numeric(posts$timestamp)
+head(posts$timestamp)
+str(posts$timestamp)
+
+posts$timestamp <- as.POSIXct(posts$timestamp, origin = "1970-01-01", tz = "America/New_York")
+
+posts$hour <- hour(posts$timestamp)
+posts$weekday <- wday(posts$timestamp, label = TRUE)
+posts$date <- as.Date(posts$timestamp)
+```
+
+# a little cleaning first
+```{r, message=FALSE, warning=FALSE} 
+library(dplyr)
+
+posts$sentiment <- tolower(posts$`hand-classification`)
+
+posts<- posts %>%
+  mutate(sentiment = case_when(
+    sentiment %in% c("favour", "favor", "for") ~ "favour",
+    sentiment %in% c("oppose", "opposite") ~ "oppose",
+    sentiment %in% c("neutral", "neural") ~ "neutral",
+    sentiment %in% c("irrelevant", "irrevelant", "irrellevant") ~ "irrelevant",
+    TRUE ~ sentiment  
+  ))
+posts$sentiment <- factor(tolower(posts$sentiment),
+                           levels = c("favour", "oppose", "neutral", "irrelevant"))
+
+```
+
+1. Text Preprocessing and Feature Creation
+```{r, message=FALSE, warning=FALSE} 
+library(dplyr)
+library(stringr)
+library(tidytext)
+library(SnowballC)    
+library(stopwords)  
+
+#tweets
+
+#  preprocessing function
+posts_processed <- function(posts, text_column = "text") {
+  posts %>%
+    # Step 1: Creating a unique post ID 
+    mutate(post_id = as.character(row_number())) %>%
+    
+    # Step 2: Cleaning - lowercase, remove punctuation, remove numbers
+    mutate(!!text_column := tolower(!!sym(text_column)),
+           !!text_column := str_replace_all(!!sym(text_column), "[[:punct:]]", ""),
+           !!text_column := str_remove_all(!!sym(text_column), "\\d+")) %>%
+    
+    # Step 3: Tokenizing into individual words
+    unnest_tokens(word, !!sym(text_column)) %>%
+    
+    # Step 4: Removing stop words
+    anti_join(stop_words, by = "word") %>%
+    
+    # Step 5: Applying stemming to reduce words to their root form
+    mutate(word = wordStem(word)) %>%
+    
+    # Optional: Remove empty strings after stemming
+    filter(word != "")
+}
+
+Cleaned_posts <- posts_processed(posts)
+print(Cleaned_posts)
+
+library(ggplot2)
+
+Cleaned_posts %>%
+  count(word, sort = TRUE) %>%  # Counting word frequency
+  filter(n >= 2) %>%            # Filtering out rare words
+  ggplot(aes(n)) +
+  geom_histogram(binwidth = 1, fill = "gray30") +  
+  scale_x_log10() +
+  geom_vline(xintercept = 2, linetype = "dashed", color = "red") +
+  labs(
+    title = "Word Frequency Distribution (Log Scale)",
+    x = "Word Frequency (n)",
+    y = "Count of Unique Words"
+  )
+
+```
+
+```{r, message=FALSE, warning=FALSE} 
+# Grouping by document ID and pasting tokens back into a full string
+Cleaned_texts_rejoined <- Cleaned_posts %>%
+  group_by(post_id) %>%
+  summarise(
+    text = paste(word, collapse = " "),
+    across(-word, ~ first(.)),   # brings in all other columns (except 'word')
+    .groups = "drop"
+  )
+
+
+# corpus
+library(tm)
+corpus <- VCorpus(VectorSource(Cleaned_texts_rejoined$text))
+dtm <- DocumentTermMatrix(corpus, control = list(weighting = weightTfIdf))
+dtm = removeSparseTerms(dtm, 0.98)
+```
+
+
+convertting the matrix to a data frame Add the ID, sentiment variable to the data frame
+```{r}
+dtm_df = as.data.frame(as.matrix(dtm))
+dtm_df$ID = posts$ID
+dtm_df$stance = posts$sentiment
+```
+
+
+
+
+2. Dataset Splitting: into training (80 percent) and test (20 percent) sets.
+```{r, message=FALSE, warning=FALSE} 
+library(rsample)
+set.seed(123)
+# 20% holdout sample
+test <- dtm_df %>% sample_frac(.2)
+# Rest in the training set
+train <- dtm_df %>% anti_join(test, by = 'ID') %>% select(-ID)
+# Remove ID after using to create train/test
+test <- test %>% select(-ID)
+```
+
+3. Model Development
+
+## Running a K-Nearest Neighbors mode
+```{r}
+# Create separate training and testing features and labels objects
+library(class)
+train_features <- train %>% select(-stance)
+test_features <- test %>% select(-stance)
+
+train_label <- train$stance
+test_label <- test$stance
+
+# Predicted values from K-NN, with K = 3
+knnpred <- knn(train_features,test_features,train_label, k = 3)
+```
+
+```{r}
+# Combine predicted and actual labels into one data frame
+library(caret)
+pred_actual <- data.frame(predicted = knnpred, actual = test_label)
+pred_actual %>% head()
+
+# Create confusion matrix to evaluate model performance
+pred_actual %>% table()
+confusionMatrix(pred_actual %>% table())
+
+# Precision and recall are shown as positive predictive value and sensitivity; you can also use precision()/recall() functions
+```
+
+## Running a Support Vector Machine
+
+```{r, message=FALSE, warning=FALSE} 
+library(e1071)
+svmfit <- svm(stance ~ ., 
+              data = train, 
+              kernel = 'linear', 
+              cost = 10)
+```
+
+```{r,echo=FALSE, results='hide'}
+summary(svmfit)
+```
+
+```{r}
+pred <- predict(svmfit, test)
+head(pred)
+# Construct the confusion matrix
+pred_actual <- data.frame(predicted = pred, actual = test_label)
+pred_actual %>% head()
+confusionMatrix(pred_actual %>% table())
+```
+
+We compared the performance of two classification models—Support Vector Machine (SVM) and k-Nearest Neighbors (KNN)—on a multi-class task involving four target labels: “favour”, “oppose”, “neutral”, and “irrelevant”. To comprehensively evaluate the models, we considered several key metrics including overall accuracy, Kappa statistic, and per-class precision and recall.
+
+In terms of overall accuracy, the KNN model slightly outperformed SVM, achieving an accuracy of 0.75 compared to SVM’s 0.7375. However, due to the imbalanced nature of the class distribution, accuracy alone is not a reliable indicator of performance. The Kappa statistic provides a better sense of agreement between predicted and true labels. The Kappa value for SVM was 0.1304, indicating a modest level of agreement beyond chance, while the KNN model’s Kappa was -0.027, suggesting performance worse than random guessing. This strongly favors SVM in terms of consistency.
+
+When examining class-wise performance, SVM showed some ability to identify the “favour” class, with a recall of 0.1333 and a precision of 0.5. In contrast, the KNN model completely failed to detect any “favour” instances. Both models were unable to identify any samples in the “oppose” class, resulting in undefined precision and recall. For the “neutral” class, both models performed poorly, with precision and recall at zero. Only for the “irrelevant” class did both models achieve reasonable results. SVM had a recall of 0.9194 and a precision of 0.8028, while KNN achieved an even higher recall of 0.9677, but a slightly lower precision of 0.7692.
+
+Balanced accuracy, which averages the recall across all classes and mitigates the effect of class imbalance, also favored SVM in most categories, particularly for the “favour” and “irrelevant” classes. Despite KNN’s marginally higher overall accuracy, it heavily over-predicted the dominant “irrelevant” class and essentially ignored the other three categories.
+
+In conclusion, while KNN achieved slightly better accuracy, it demonstrated severe class imbalance and failed to recognize minority classes, such as “favour” and “oppose”. On the other hand, SVM showed more balanced behavior, achieving at least some recognition of multiple classes, particularly “favour”. Considering all performance indicators—including accuracy, Kappa, and per-class precision and recall—we conclude that the SVM model offers more reliable and interpretable results, and is therefore selected as the better-performing classifier for this task.
+
+
+
+4. Evaluating the Model
+
+```{r}
+# 4.1 Use the final model (SVM) to predict stance in the test set
+
+# Generate predictions using the final SVM model (assumes 'svmfit' already trained)
+pred <- predict(svmfit, test)
+
+# Display the predicted stance distribution (this is the "automatically-assigned" stance)
+cat("Predicted stance distribution:\n")
+print(table(pred))
+
+
+# 4.2 Evaluate model performance using the manually-assigned labels
+
+# Combine predicted and actual labels into one data frame
+pred_actual <- data.frame(predicted = pred, actual = test$stance)
+
+# Load caret package for confusion matrix and performance metrics
+library(caret)
+
+# Generate confusion matrix (includes accuracy, precision, recall)
+conf_matrix <- confusionMatrix(table(pred_actual))
+print(conf_matrix)
+
+# Extract and display specific metrics
+cat("Accuracy:\n")
+print(conf_matrix$overall["Accuracy"])
+
+cat("Precision for each class (Positive Predictive Value):\n")
+print(conf_matrix$byClass[,"Pos Pred Value"])
+
+cat("Recall for each class (Sensitivity):\n")
+print(conf_matrix$byClass[,"Sensitivity"])
+
+
+# 4.3 Compare predicted stance distribution to manually-assigned labels
+
+# Show the actual stance distribution from manually-labeled test set
+cat("Actual stance distribution (ground truth):\n")
+print(table(test$stance))
+
+# Re-show predicted stance distribution for easy comparison
+cat("Predicted stance distribution (from model):\n")
+print(table(pred))
+```
+
+
+
+
