@@ -1,0 +1,29 @@
+---
+title: "Report GD Code"
+author: "Grace DesJardins"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+dat <- read.csv(("/Users/gracedesjardins/Desktop/SURVMETH 622/reddit_stance_test_output.csv"))
+table(dat$stance)
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(dat, aes(x = stance)) +
+  geom_bar(aes(fill = stance)) +
+  labs(title = "Stance of Abortion Reddit Posts on Test Set", 
+       x = "Stance", 
+       y = "Count") +
+  theme_minimal() 
+```
+
